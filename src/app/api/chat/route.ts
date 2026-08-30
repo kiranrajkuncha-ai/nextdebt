@@ -1,7 +1,12 @@
 import { createGoogle } from "@ai-sdk/google";
 import { convertToModelMessages, embed, generateText, Output, type UIMessage } from "ai";
 import { z } from "zod";
-import { saveDebtRecord, fetchUsers, fetchTransactionsForUser, fetchUserSummary } from "@/lib/db";
+import {
+  saveDebtRecord,
+  fetchUsers,
+  fetchTransactionsForUser,
+  fetchUserSummary,
+} from "@/lib/db";
 
 const googleProvider = createGoogle({
   apiKey: process.env.GOOGLE_GENERATIVE_AI_API_KEY,
@@ -49,7 +54,39 @@ function formatIntentResponse(intent: string, payload: any) {
       const txCount = s.tx_count ?? 0;
       const debits = typeof s.total_debits === "number" ? Number(s.total_debits).toFixed(2) : s.total_debits;
       const credits = typeof s.total_credits === "number" ? Number(s.total_credits).toFixed(2) : s.total_credits;
-      return `Summary for ${name}: ${txCount} transactions — Debits: ${debits}, Credits: ${credits}`;
+
+      return `
+<div class="mt-3 overflow-hidden rounded-xl border border-slate-700 bg-slate-900/60 shadow-sm">
+  <div class="border-b border-slate-700 bg-slate-800/80 px-4 py-2 text-sm font-semibold text-sky-200">
+    Summary / సారాంశం for ${name}
+  </div>
+  <table class="min-w-full border-collapse text-left text-sm text-slate-200">
+    <thead class="bg-slate-800/90 text-xs uppercase tracking-wide text-slate-300">
+      <tr>
+        <th class="px-4 py-3 font-medium">English</th>
+        <th class="px-4 py-3 font-medium">Telugu</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr class="border-t border-slate-700">
+        <td class="px-4 py-3 font-medium text-slate-100">User / వినియోగదారు</td>
+        <td class="px-4 py-3 text-slate-200">${name}</td>
+      </tr>
+      <tr class="border-t border-slate-700">
+        <td class="px-4 py-3 font-medium text-slate-100">Total Transactions / మొత్తం ట్రాన్సాక్షన్లు</td>
+        <td class="px-4 py-3 text-slate-200">${txCount}</td>
+      </tr>
+      <tr class="border-t border-slate-700">
+        <td class="px-4 py-3 font-medium text-slate-100">Debits / డెబిట్లు</td>
+        <td class="px-4 py-3 text-slate-200">${debits}</td>
+      </tr>
+      <tr class="border-t border-slate-700">
+        <td class="px-4 py-3 font-medium text-slate-100">Credits / క్రెడిట్లు</td>
+        <td class="px-4 py-3 text-slate-200">${credits}</td>
+      </tr>
+    </tbody>
+  </table>
+</div>`;
     }
 
     case "create_debt": {
@@ -68,6 +105,101 @@ function formatIntentResponse(intent: string, payload: any) {
 
 export const runtime = "nodejs";
 export const maxDuration = 30;
+
+async function createEmbeddingForText(value: string) {
+  const text = value.trim();
+
+  if (!text) {
+    return null;
+  }
+
+  try {
+    const embeddingResult = await embed({
+      model: embeddingModel,
+      value: text,
+      providerOptions: {
+        google: {
+          outputDimensionality: 1536,
+        },
+      },
+    });
+
+    return embeddingResult.embedding ?? null;
+  } catch (error) {
+    console.warn("Embedding generation failed:", error);
+    return null;
+  }
+}
+
+function cosineSimilarity(a: number[], b: number[]) {
+  if (!Array.isArray(a) || !Array.isArray(b) || a.length === 0 || b.length === 0) {
+    return 0;
+  }
+
+  const length = Math.min(a.length, b.length);
+  let dot = 0;
+  let magnitudeA = 0;
+  let magnitudeB = 0;
+
+  for (let index = 0; index < length; index += 1) {
+    dot += a[index] * b[index];
+    magnitudeA += a[index] * a[index];
+    magnitudeB += b[index] * b[index];
+  }
+
+  if (magnitudeA === 0 || magnitudeB === 0) {
+    return 0;
+  }
+
+  return dot / (Math.sqrt(magnitudeA) * Math.sqrt(magnitudeB));
+}
+
+async function findSimilarUsers(query: string, candidateUsers: string[], limit = 5, minSimilarity = 0.9) {
+  const trimmed = query.trim();
+
+  if (!trimmed || candidateUsers.length === 0) {
+    return [];
+  }
+
+  const queryEmbedding = await createEmbeddingForText(trimmed);
+
+  if (!queryEmbedding) {
+    return [];
+  }
+
+  const matches = await Promise.all(
+    candidateUsers.map(async (userName) => {
+      const candidate = userName.trim();
+
+      if (!candidate || candidate.toLowerCase() === trimmed.toLowerCase()) {
+        return null;
+      }
+
+      const candidateEmbedding = await createEmbeddingForText(candidate);
+
+      if (!candidateEmbedding) {
+        return null;
+      }
+
+      const similarity = cosineSimilarity(queryEmbedding, candidateEmbedding);
+
+      if (similarity < minSimilarity) {
+        return null;
+      }
+
+      return {
+        name: candidate,
+        similarity,
+      };
+    }),
+  );
+
+  return matches
+    .filter((item): item is { name: string; similarity: number } => Boolean(item))
+    .sort((left, right) => right.similarity - left.similarity)
+    .slice(0, limit)
+    .map((item) => item.name);
+}
 
 export async function POST(req: Request) {
   try {
@@ -96,23 +228,77 @@ export async function POST(req: Request) {
     }
 
     if (intentOutput.intent === "transactions") {
-      const name = (intentOutput.target_name as string) || (body?.target_name as string);
-      if (!name || name.trim().length === 0) {
-        return Response.json({ message: "Please provide the user's name to fetch transactions." });
+      const rawName = (intentOutput.target_name as string) || (body?.target_name as string) || textInput;
+      const users = await fetchUsers();
+
+      if (!rawName || rawName.trim().length === 0) {
+        return Response.json({
+          intent: "list_users",
+          users,
+          formatted: formatIntentResponse("list_users", { users }),
+        });
       }
-      const tx = await fetchTransactionsForUser(name.trim());
-      const formatted = formatIntentResponse("transactions", { name: name.trim(), transactions: tx });
-      return Response.json({ intent: "transactions", name: name.trim(), transactions: tx, formatted });
+
+      const userName = rawName.trim();
+      const exactUser = users.find((user) => user.toLowerCase() === userName.toLowerCase());
+      const similarUsers = await findSimilarUsers(userName, users, 5, 0.9);
+
+      if (similarUsers.length > 0) {
+        return Response.json({
+          intent: "candidate_users",
+          users: similarUsers,
+          formatted: `Did you mean one of these users? ${similarUsers.join(", ")}`,
+        });
+      }
+
+      if (exactUser) {
+        const tx = await fetchTransactionsForUser(exactUser);
+        const formatted = formatIntentResponse("transactions", { name: exactUser, transactions: tx });
+        return Response.json({ intent: "transactions", name: exactUser, transactions: tx, formatted });
+      }
+
+      return Response.json({
+        intent: "list_users",
+        users,
+        formatted: formatIntentResponse("list_users", { users }),
+      });
     }
 
     if (intentOutput.intent === "user_summary") {
-      const name = (intentOutput.target_name as string) || (body?.target_name as string);
-      if (!name || name.trim().length === 0) {
-        return Response.json({ message: "Please provide the user's name to fetch a summary." });
+      const rawName = (intentOutput.target_name as string) || (body?.target_name as string) || textInput;
+      const users = await fetchUsers();
+
+      if (!rawName || rawName.trim().length === 0) {
+        return Response.json({
+          intent: "list_users",
+          users,
+          formatted: formatIntentResponse("list_users", { users }),
+        });
       }
-      const summary = await fetchUserSummary(name.trim());
-      const formatted = formatIntentResponse("user_summary", { summary });
-      return Response.json({ intent: "user_summary", summary, formatted });
+
+      const userName = rawName.trim();
+      const exactUser = users.find((user) => user.toLowerCase() === userName.toLowerCase());
+      const similarUsers = await findSimilarUsers(userName, users, 5, 0.9);
+
+      if (similarUsers.length > 0) {
+        return Response.json({
+          intent: "candidate_users",
+          users: similarUsers,
+          formatted: `Did you mean one of these users? ${similarUsers.join(", ")}`,
+        });
+      }
+
+      if (exactUser) {
+        const summary = await fetchUserSummary(exactUser);
+        const formatted = formatIntentResponse("user_summary", { summary });
+        return Response.json({ intent: "user_summary", summary, formatted });
+      }
+
+      return Response.json({
+        intent: "list_users",
+        users,
+        formatted: formatIntentResponse("list_users", { users }),
+      });
     }
 
     // Default to creating a debt record when intent is create_debt or unknown
@@ -172,16 +358,7 @@ Return valid JSON that matches the schema exactly.`,
     let vectorEmbedding: number[] | null = null;
 
     try {
-      const embeddingResult = await embed({
-        model: embeddingModel,
-        value: originalTranscript || textInput,
-        providerOptions: {
-          google: {
-            outputDimensionality: 1536,
-          },
-        },
-      });
-      vectorEmbedding = embeddingResult.embedding ?? null;
+      vectorEmbedding = await createEmbeddingForText(originalTranscript || textInput);
     } catch (embedError) {
       console.warn("Embedding generation failed for debt record:", embedError);
       vectorEmbedding = embedding.length > 0 ? embedding : null;

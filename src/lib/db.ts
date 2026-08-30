@@ -40,6 +40,66 @@ const formatEmbeddingForPgVector = (embedding?: number[] | null) => {
   return `[${embedding.map((value) => Number(value).toFixed(6)).join(",")}]`;
 };
 
+async function ensureUserTables() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS users (
+      id SERIAL PRIMARY KEY,
+      name TEXT NOT NULL UNIQUE,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS transactions (
+      id SERIAL PRIMARY KEY,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      amount NUMERIC(12,2) NOT NULL,
+      type TEXT NOT NULL CHECK (type IN ('credit', 'debit')),
+      notes TEXT NOT NULL DEFAULT '',
+      original_transcript TEXT NOT NULL DEFAULT '',
+      embedding vector,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+  `);
+}
+
+void ensureUserTables().catch((error) => {
+  console.error("Failed to initialize user/transaction tables:", error);
+});
+
+export async function findOrCreateUserByName(name: string) {
+  const trimmed = name.trim();
+
+  if (!trimmed) {
+    throw new Error("User name is required");
+  }
+
+  const existing = await pool.query(
+    `
+      SELECT id, name
+      FROM users
+      WHERE LOWER(name) = LOWER($1)
+      LIMIT 1
+    `,
+    [trimmed],
+  );
+
+  if (existing.rows[0]) {
+    return existing.rows[0];
+  }
+
+  const created = await pool.query(
+    `
+      INSERT INTO users (name)
+      VALUES ($1)
+      RETURNING id, name
+    `,
+    [trimmed],
+  );
+
+  return created.rows[0];
+}
+
 export async function saveDebtRecord({
   name,
   amount,
@@ -55,10 +115,12 @@ export async function saveDebtRecord({
   originalTranscript?: string;
   embedding?: number[] | null;
 }) {
+  const user = await findOrCreateUserByName(name);
+
   const result = await pool.query(
     `
-      INSERT INTO debt_entries (
-        customer_name,
+      INSERT INTO transactions (
+        user_id,
         amount,
         type,
         notes,
@@ -66,10 +128,10 @@ export async function saveDebtRecord({
         embedding
       )
       VALUES ($1, $2, $3, $4, $5, $6::vector)
-      RETURNING id, customer_name, amount, type, notes, original_transcript, embedding, created_at;
+      RETURNING id, user_id, amount, type, notes, original_transcript, embedding, created_at;
     `,
     [
-      name.trim(),
+      user.id,
       Number(amount),
       type,
       notes ?? "",
@@ -78,49 +140,80 @@ export async function saveDebtRecord({
     ],
   );
 
-  return result.rows[0];
+  return {
+    ...result.rows[0],
+    customer_name: user.name,
+    user_id: user.id,
+  };
 }
 
 export async function fetchUsers(): Promise<string[]> {
   const res = await pool.query(`
-    SELECT DISTINCT customer_name FROM debt_entries
-    WHERE customer_name IS NOT NULL AND customer_name <> ''
-    ORDER BY customer_name ASC
+    SELECT name FROM users
+    WHERE name IS NOT NULL AND name <> ''
+    ORDER BY name ASC
   `);
-  return res.rows.map((r) => r.customer_name as string);
+  return res.rows.map((r) => r.name as string);
 }
 
 export async function fetchTransactionsForUser(name: string) {
+  const trimmed = name.trim();
+
+  if (!trimmed) {
+    return [];
+  }
+
   const res = await pool.query(
     `
-      SELECT id, customer_name, amount, type, notes, original_transcript, created_at
-      FROM debt_entries
-      WHERE customer_name = $1
-      ORDER BY created_at DESC
+      SELECT
+        t.id,
+        u.name AS customer_name,
+        t.amount,
+        t.type,
+        t.notes,
+        t.original_transcript,
+        t.created_at
+      FROM transactions t
+      INNER JOIN users u ON u.id = t.user_id
+      WHERE LOWER(u.name) = LOWER($1)
+      ORDER BY t.created_at DESC
       LIMIT 100
     `,
-    [name],
+    [trimmed],
   );
+
   return res.rows;
 }
 
 export async function fetchUserSummary(name: string) {
+  const trimmed = name.trim();
+
+  if (!trimmed) {
+    return {
+      customer_name: "",
+      tx_count: 0,
+      total_debits: 0,
+      total_credits: 0,
+    };
+  }
+
   const res = await pool.query(
     `
       SELECT
-        customer_name,
+        u.name AS customer_name,
         COUNT(*)::int AS tx_count,
-        COALESCE(SUM(amount) FILTER (WHERE type = 'debit'), 0)::float AS total_debits,
-        COALESCE(SUM(amount) FILTER (WHERE type = 'credit'), 0)::float AS total_credits
-      FROM debt_entries
-      WHERE customer_name = $1
-      GROUP BY customer_name
+        COALESCE(SUM(t.amount) FILTER (WHERE t.type = 'debit'), 0)::float AS total_debits,
+        COALESCE(SUM(t.amount) FILTER (WHERE t.type = 'credit'), 0)::float AS total_credits
+      FROM transactions t
+      INNER JOIN users u ON u.id = t.user_id
+      WHERE LOWER(u.name) = LOWER($1)
+      GROUP BY u.name
     `,
-    [name],
+    [trimmed],
   );
 
   return res.rows[0] ?? {
-    customer_name: name,
+    customer_name: trimmed,
     tx_count: 0,
     total_debits: 0,
     total_credits: 0,

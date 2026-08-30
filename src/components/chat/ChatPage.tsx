@@ -32,6 +32,7 @@ const appendMessage = (
   messages: ChatMessageData[],
   text: string,
   role: "user" | "system",
+  isHtml = false,
 ): ChatMessageData[] => [
   ...messages,
   {
@@ -39,6 +40,7 @@ const appendMessage = (
     role,
     text,
     timestamp: formatTimestamp(),
+    isHtml,
   },
 ];
 
@@ -47,6 +49,7 @@ export function ChatPage() {
   const [isListening, setIsListening] = useState(false);
   const [isSending, setIsSending] = useState(false);
   const [messages, setMessages] = useState<ChatMessageData[]>(starterMessages);
+  const [userSuggestions, setUserSuggestions] = useState<string[]>([]);
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<BlobPart[]>([]);
@@ -77,7 +80,12 @@ export function ChatPage() {
 
       const data = await response.json();
 
-      // Prefer the human-readable `formatted` string from the API when present.
+      if ((data?.intent === "list_users" || data?.intent === "candidate_users") && Array.isArray(data.users)) {
+        setUserSuggestions(data.users);
+      } else {
+        setUserSuggestions([]);
+      }
+
       let formatted: string;
       if (typeof data?.formatted === "string" && data.formatted.trim().length > 0) {
         formatted = data.formatted;
@@ -86,7 +94,8 @@ export function ChatPage() {
         formatted = typeof object === "string" ? object : JSON.stringify(object, null, 2);
       }
 
-      setMessages((current) => appendMessage(current, formatted, "system"));
+      const isHtmlResponse = /<table|<div[^>]*class=/.test(formatted);
+      setMessages((current) => appendMessage(current, formatted, "system", isHtmlResponse));
     } catch (error) {
       console.error("Debt parser request failed:", error);
       setMessages((current) =>
@@ -209,6 +218,24 @@ export function ChatPage() {
         </aside>
 
         <section className="flex flex-1 flex-col">
+          {userSuggestions.length > 0 && (
+            <div className="border-b border-slate-800 bg-slate-950/80 px-5 py-4">
+              <p className="mb-3 text-xs uppercase tracking-[0.18em] text-slate-400">Select a user</p>
+              <div className="flex flex-wrap gap-2">
+                {userSuggestions.map((user) => (
+                  <button
+                    key={user}
+                    type="button"
+                    onClick={() => handleSendMessage(`summary for ${user}`)}
+                    className="rounded-full border border-sky-500/40 bg-sky-500/10 px-3 py-1.5 text-sm text-sky-200 transition hover:border-sky-400 hover:bg-sky-500/20"
+                  >
+                    {user}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
           <header className="flex items-center justify-between border-b border-slate-800 bg-slate-950/80 px-5 py-4">
             <div className="flex items-center gap-3">
               <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-sky-500/15 text-sm font-semibold text-sky-300">
