@@ -67,6 +67,32 @@ const formatEmbeddingForPgVector = (embedding?: number[] | null) => {
   return `[${embedding.map((value) => Number(value).toFixed(6)).join(",")}]`;
 };
 
+export async function findUserNamesByEmbedding(
+  embedding: number[] | null,
+  minSimilarity = 0.72,
+) {
+  const formattedEmbedding = formatEmbeddingForPgVector(embedding);
+
+  if (!formattedEmbedding) {
+    return [];
+  }
+
+  const result = await pool.query(
+    `
+      SELECT u.name, MAX(1 - (t.embedding <=> $1::vector)) AS similarity
+      FROM transactions t
+      INNER JOIN users u ON u.id = t.user_id
+      WHERE t.embedding IS NOT NULL
+      GROUP BY u.id, u.name
+      HAVING MAX(1 - (t.embedding <=> $1::vector)) >= $2
+      ORDER BY similarity DESC
+    `,
+    [formattedEmbedding, minSimilarity],
+  );
+
+  return result.rows.map((row) => String(row.name));
+}
+
 async function ensureUserTables() {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS users (
@@ -82,7 +108,7 @@ async function ensureUserTables() {
       user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
       amount NUMERIC(12,2) NOT NULL,
       type TEXT NOT NULL CHECK (type IN ('credit', 'debit')),
-      notes TEXT NOT NULL DEFAULT '',
+      notes TEXT NOT NULL DEFAULT '', 
       original_transcript TEXT NOT NULL DEFAULT '',
       embedding vector,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -183,10 +209,10 @@ export async function fetchUsers(): Promise<string[]> {
   return res.rows.map((r) => r.name as string);
 }
 
-export async function fetchTransactionsForUser(name: string) {
-  const trimmed = name.trim();
+export async function fetchTransactionsForUser(name: string | string[]) {
+  const names = Array.isArray(name) ? name.map((item) => item.trim()).filter(Boolean) : [name.trim()];
 
-  if (!trimmed) {
+  if (names.length === 0) {
     return [];
   }
 
@@ -202,20 +228,20 @@ export async function fetchTransactionsForUser(name: string) {
         t.created_at
       FROM transactions t
       INNER JOIN users u ON u.id = t.user_id
-      WHERE LOWER(u.name) = LOWER($1)
+      WHERE LOWER(u.name) = ANY($1::text[])
       ORDER BY t.created_at DESC
       LIMIT 100
     `,
-    [trimmed],
+    [names.map((item) => item.toLowerCase())],
   );
 
   return res.rows;
 }
 
-export async function fetchUserSummary(name: string) {
-  const trimmed = name.trim();
+export async function fetchUserSummary(name: string | string[]) {
+  const names = Array.isArray(name) ? name.map((item) => item.trim()).filter(Boolean) : [name.trim()];
 
-  if (!trimmed) {
+  if (names.length === 0) {
     return {
       customer_name: "",
       tx_count: 0,
@@ -227,20 +253,19 @@ export async function fetchUserSummary(name: string) {
   const res = await pool.query(
     `
       SELECT
-        u.name AS customer_name,
+        MIN(u.name) AS customer_name,
         COUNT(*)::int AS tx_count,
         COALESCE(SUM(t.amount) FILTER (WHERE t.type = 'debit'), 0)::float AS total_debits,
         COALESCE(SUM(t.amount) FILTER (WHERE t.type = 'credit'), 0)::float AS total_credits
       FROM transactions t
       INNER JOIN users u ON u.id = t.user_id
-      WHERE LOWER(u.name) = LOWER($1)
-      GROUP BY u.name
+      WHERE LOWER(u.name) = ANY($1::text[])
     `,
-    [trimmed],
+    [names.map((item) => item.toLowerCase())],
   );
 
   return res.rows[0] ?? {
-    customer_name: trimmed,
+    customer_name: names.join(" / "),
     tx_count: 0,
     total_debits: 0,
     total_credits: 0,

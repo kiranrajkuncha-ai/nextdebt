@@ -3,6 +3,7 @@ import { ToolLoopAgent, embed, tool } from "ai";
 import { z } from "zod";
 import {
   fetchUsers,
+  findUserNamesByEmbedding,
   saveDebtRecord,
 } from "@/lib/db";
 
@@ -184,6 +185,13 @@ function fuzzyUserSimilarity(left: string, right: string) {
   return 1 - distance / longerLength;
 }
 
+function isReadOnlyRequest(value: string) {
+  const normalized = value.toLowerCase();
+  return /\b(summary|summarize|balance|transaction|transactions|history|report|show|view|list)\b/.test(
+    normalized,
+  );
+}
+
 async function findSimilarUsers(
   query: string,
   candidateUsers: string[],
@@ -246,10 +254,18 @@ export async function resolveUserLookup(name: string, options?: { forceResolve?:
   if (forceResolve) {
     const exactUser = users.find((user) => user.toLowerCase() === trimmed.toLowerCase()) ?? null;
 
-    if (exactUser) {
+    const queryEmbedding = await createEmbeddingForText(trimmed);
+    const embeddingMatches = await findUserNamesByEmbedding(queryEmbedding);
+
+    const matchedUserNames = Array.from(
+      new Set([...(exactUser ? [exactUser] : []), ...embeddingMatches]),
+    );
+
+    if (matchedUserNames.length > 0) {
       return {
         status: "resolved" as const,
-        userName: exactUser,
+        userName: matchedUserNames[0],
+        userNames: matchedUserNames,
         users,
       };
     }
@@ -367,15 +383,22 @@ export const debtTools = {
 
   createDebt: tool({
     description:
-      "Create a new debt record when the user gives money owed information (name, amount, credit or debit).",
+      "Create a new debt record only when the user explicitly records money owed information. Never use this for summaries, balances, transaction history, reports, or other read-only requests.",
     inputSchema: z.object({
       name: z.string().describe("Person or customer name"),
       amount: z.number().describe("Transaction amount"),
       type: z.enum(["credit", "debit"]).describe("credit = received, debit = given/owed"),
       notes: z.string().optional().describe("Short notes about the transaction"),
-      originalTranscript: z.string().optional().describe("Original user message"),
+      originalTranscript: z.string().describe("Exact original user message that explicitly records the debt"),
     }),
     execute: async ({ name, amount, type, notes, originalTranscript }) => {
+      if (isReadOnlyRequest(originalTranscript)) {
+        return {
+          status: "rejected",
+          message: "This is a read-only request. Do not create a debt record; provide the requested summary or history instead.",
+        };
+      }
+
       const embedding = await createEmbeddingForText(
         originalTranscript?.trim() || notes?.trim() || name,
       );
@@ -413,7 +436,8 @@ Rules:
 - Never assume the summary is final until the user picks one name from the suggestion list shown in the UI.
 - When the user picks a name from suggestions, the app will fetch the summary directly — you do not need to call getUserSummary again for that pick.
 - For transaction history, call getTransactions to show similar name suggestions first.
-- For new debt entries like "Kiran gave 200", call createDebt.
+- For new debt entries like "Kiran gave 200", call createDebt and pass the exact user message as originalTranscript.
+- Never call createDebt for a summary, balance, transaction history, report, or other read-only request. If createDebt returns status "rejected", do not retry it.
 - If a tool returns status "ambiguous", tell the user to pick one of the suggested names.
 - Keep replies concise and helpful in Telugu or English, matching the user's language.`,
   tools: debtTools,

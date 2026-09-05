@@ -28,11 +28,13 @@ export async function createConfirmedUserResponse(
     return createTextStreamResponse(`No user found matching "${userName}".`);
   }
 
+  const matchedUserNames = "userNames" in lookup ? lookup.userNames : [userName];
+
   if (action === "transactions") {
-    const transactions = await fetchTransactionsForUser(lookup.userName);
+    const transactions = await fetchTransactionsForUser(matchedUserNames);
     return createTextStreamResponse(formatTransactions(lookup.userName, transactions));
   }
 
-  const summary = await fetchUserSummary(lookup.userName);
+  const summary = await fetchUserSummary(matchedUserNames);
   return createTextStreamResponse(formatUserSummaryHtml(summary));
 }
