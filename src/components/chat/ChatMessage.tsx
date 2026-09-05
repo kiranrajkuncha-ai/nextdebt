@@ -1,18 +1,37 @@
-export type MessageRole = "user" | "system";
+import type { UIMessage } from "ai";
+import { useEffect, useState } from "react";
+import { getRenderableMessageContent } from "@/lib/chat-message-utils";
 
-export type ChatMessageData = {
-  id: number;
-  role: MessageRole;
-  text: string;
-  timestamp: string;
-  isHtml?: boolean;
-};
+const formatTimestamp = () =>
+  new Date().toLocaleTimeString([], {
+    hour: "numeric",
+    minute: "2-digit",
+  });
 
-export function ChatMessage({ message }: { message: ChatMessageData }) {
+function MessageTimestamp({ className }: { className: string }) {
+  const [timestamp, setTimestamp] = useState("");
+
+  useEffect(() => {
+    setTimestamp(formatTimestamp());
+  }, []);
+
+  if (!timestamp) {
+    return null;
+  }
+
+  return <div className={className}>{timestamp}</div>;
+}
+
+export function ChatMessage({ message }: { message: UIMessage }) {
   const isUser = message.role === "user";
-  const isHighlighted = /^(Users \(|Summary for |Transactions for )/i.test(message.text.trim());
+  const { text, isHtml } = getRenderableMessageContent(message);
+  const isHighlighted = /^(Users \(|Summary for |Transactions for |Did you mean)/i.test(text.trim());
 
-  if (message.isHtml) {
+  if (!text) {
+    return null;
+  }
+
+  if (isHtml) {
     return (
       <div className={`flex ${isUser ? "justify-end" : "justify-start"}`}>
         <div
@@ -25,11 +44,9 @@ export function ChatMessage({ message }: { message: ChatMessageData }) {
         >
           <div
             className="prose prose-invert max-w-none text-[0.96rem] leading-7 [&_table]:min-w-full [&_table]:border-collapse [&_table]:text-left [&_table]:text-sm [&_th]:px-4 [&_th]:py-3 [&_td]:px-4 [&_td]:py-3 [&_thead]:bg-slate-800/90 [&_thead]:text-slate-300 [&_tbody_tr]:border-t [&_tbody_tr]:border-slate-700"
-            dangerouslySetInnerHTML={{ __html: message.text }}
+            dangerouslySetInnerHTML={{ __html: text }}
           />
-          <div className={`mt-2 text-[0.68rem] ${isUser ? "text-sky-200/80" : "text-slate-400"}`}>
-            {message.timestamp}
-          </div>
+          <MessageTimestamp className={`mt-2 text-[0.68rem] ${isUser ? "text-sky-200/80" : "text-slate-400"}`} />
         </div>
       </div>
     );
@@ -49,12 +66,12 @@ export function ChatMessage({ message }: { message: ChatMessageData }) {
       >
         <div className="flex items-start justify-between gap-4">
           <p className={`whitespace-pre-wrap text-[0.96rem] leading-7 text-current ${isHighlighted ? "text-lg font-semibold" : ""}`}>
-            {message.text}
+            {text}
           </p>
           {isHighlighted ? (
             <button
               type="button"
-              onClick={() => navigator.clipboard?.writeText(message.text)}
+              onClick={() => navigator.clipboard?.writeText(text)}
               className="ml-3 hidden rounded-md border border-emerald-500/30 bg-emerald-600/10 px-2 py-1 text-[0.75rem] text-emerald-200 hover:bg-emerald-600/20 md:inline"
             >
               Copy
@@ -62,9 +79,7 @@ export function ChatMessage({ message }: { message: ChatMessageData }) {
           ) : null}
         </div>
 
-        <div className={`mt-2 text-[0.68rem] ${isUser ? "text-sky-200/80" : "text-slate-400"}`}>
-          {message.timestamp}
-        </div>
+        <MessageTimestamp className={`mt-2 text-[0.68rem] ${isUser ? "text-sky-200/80" : "text-slate-400"}`} />
       </div>
     </div>
   );

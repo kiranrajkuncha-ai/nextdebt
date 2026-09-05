@@ -1,9 +1,10 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, type FormEvent } from "react";
 
 type ChatComposerProps = {
   value: string;
   onChange: (value: string) => void;
-  onSend: (value?: string) => void;
+  onSend: () => void;
+  onSubmit?: (event: FormEvent) => void;
   onVoiceToggle: () => void;
   isSending: boolean;
   isListening: boolean;
@@ -13,6 +14,7 @@ export function ChatComposer({
   value,
   onChange,
   onSend,
+  onSubmit,
   onVoiceToggle,
   isSending,
   isListening,
@@ -28,7 +30,17 @@ export function ChatComposer({
   }, [value]);
 
   return (
-    <div className="border-t border-slate-800/80 bg-slate-950/80 p-4 backdrop-blur-sm">
+    <form
+      onSubmit={(event) => {
+        event.preventDefault();
+        if (onSubmit) {
+          onSubmit(event);
+          return;
+        }
+        onSend();
+      }}
+      className="border-t border-slate-800/80 bg-slate-950/80 p-4 backdrop-blur-sm"
+    >
       <div className="mx-auto max-w-4xl rounded-2xl border border-slate-700 bg-slate-900/80 p-3 shadow-2xl shadow-slate-950/50">
         <div className="flex items-end gap-3">
           <button
@@ -52,7 +64,7 @@ export function ChatComposer({
             onKeyDown={(event) => {
               if (event.key === "Enter" && !event.shiftKey) {
                 event.preventDefault();
-                onSend(value);
+                onSend();
               }
             }}
             rows={1}
@@ -61,8 +73,7 @@ export function ChatComposer({
           />
 
           <button
-            type="button"
-            onClick={() => onSend(value)}
+            type="submit"
             disabled={isSending || !value.trim()}
             className="flex h-11 items-center justify-center rounded-xl bg-sky-500 px-4 text-sm font-semibold text-slate-950 transition hover:bg-sky-400 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400"
           >
@@ -70,6 +81,6 @@ export function ChatComposer({
           </button>
         </div>
       </div>
-    </div>
+    </form>
   );
 }

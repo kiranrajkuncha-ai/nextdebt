@@ -1,18 +1,22 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useChat } from "@ai-sdk/react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
+import type { UIMessage } from "ai";
 import { ChatComposer } from "./ChatComposer";
 import { ChatMessageList } from "./ChatMessageList";
-import type { ChatMessageData } from "./ChatMessage";
+import { getCandidateUsers } from "@/lib/chat-message-utils";
 
-const starterMessages: ChatMessageData[] = [
-  {
-    id: 1,
-    role: "system",
-    text: "నమస్కారం! మీ యాప్ ఫ్లోను డిజైన్ చేయడంలో, సమీక్షించడంలో లేదా మెరుగుపరచడంలో నేను మీకు సహాయం చేయగలను. మీ ప్రాజెక్ట్ గురించి ఏ విషయం గురించైనా నన్ను అడగండి",
-    timestamp: "9:41 AM",
-  }
-];
+const welcomeMessage: UIMessage = {
+  id: "welcome",
+  role: "assistant",
+  parts: [
+    {
+      type: "text",
+      text: "నమస్కారం! మీ యాప్ ఫ్లోను డిజైన్ చేయడంలో, సమీక్షించడంలో లేదా మెరుగుపరచడంలో నేను మీకు సహాయం చేయగలను. మీ ప్రాజెక్ట్ గురించి ఏ విషయం గురించైనా నన్ను అడగండి",
+    },
+  ],
+};
 
 const chatHistory = [
   "Debt dashboard ideas",
@@ -22,97 +26,49 @@ const chatHistory = [
   "Checkout UX notes",
 ];
 
-const formatTimestamp = () =>
-  new Date().toLocaleTimeString([], {
-    hour: "numeric",
-    minute: "2-digit",
-  });
-
-const appendMessage = (
-  messages: ChatMessageData[],
-  text: string,
-  role: "user" | "system",
-  isHtml = false,
-): ChatMessageData[] => [
-  ...messages,
-  {
-    id: Date.now() + Math.random(),
-    role,
-    text,
-    timestamp: formatTimestamp(),
-    isHtml,
-  },
-];
-
 export function ChatPage() {
   const [input, setInput] = useState("");
   const [isListening, setIsListening] = useState(false);
-  const [isSending, setIsSending] = useState(false);
-  const [messages, setMessages] = useState<ChatMessageData[]>(starterMessages);
-  const [userSuggestions, setUserSuggestions] = useState<string[]>([]);
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<BlobPart[]>([]);
+
+  const { messages, sendMessage, status, error } = useChat({
+    messages: [welcomeMessage],
+  });
+
+  const isSending = status === "submitted" || status === "streaming";
+  const userSuggestions = getCandidateUsers(messages) ?? [];
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, isSending]);
 
-  const sendToDebtParser = async (value: string) => {
-    const trimmed = value.trim();
-    if (!trimmed || isSending) return;
-
-    setIsSending(true);
-
-    try {
-      const response = await fetch("/api/chat", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ text: trimmed }),
-      });
-
-      if (!response.ok) {
-        const text = await response.text();
-        throw new Error(text || "Failed to analyze debt message");
-      }
-
-      const data = await response.json();
-
-      if ((data?.intent === "list_users" || data?.intent === "candidate_users") && Array.isArray(data.users)) {
-        setUserSuggestions(data.users);
-      } else {
-        setUserSuggestions([]);
-      }
-
-      let formatted: string;
-      if (typeof data?.formatted === "string" && data.formatted.trim().length > 0) {
-        formatted = data.formatted;
-      } else {
-        const object = data?.object ?? data;
-        formatted = typeof object === "string" ? object : JSON.stringify(object, null, 2);
-      }
-
-      const isHtmlResponse = /<table|<div[^>]*class=/.test(formatted);
-      setMessages((current) => appendMessage(current, formatted, "system", isHtmlResponse));
-    } catch (error) {
-      console.error("Debt parser request failed:", error);
-      setMessages((current) =>
-        appendMessage(current, "I could not parse that debt entry. Please try again.", "system"),
-      );
-    } finally {
-      setIsSending(false);
-    }
-  };
-
-  const handleSendMessage = (valueOverride?: string) => {
+  const handleSubmit = (valueOverride?: string, confirmedUser?: string) => {
     const trimmed = (valueOverride ?? input).trim();
     if (!trimmed || isSending) return;
 
-    setMessages((current) => appendMessage(current, trimmed, "user"));
+    if (confirmedUser) {
+      sendMessage(
+        { text: trimmed },
+        {
+          body: {
+            confirmedUser,
+            confirmedAction: "summary",
+            selectedUser: confirmedUser,
+          },
+        },
+      );
+    } else {
+      sendMessage({ text: trimmed });
+    }
+
     setInput("");
-    void sendToDebtParser(trimmed);
+  };
+
+  const handleComposerSubmit = (event?: FormEvent) => {
+    event?.preventDefault();
+    handleSubmit();
   };
 
   const handleVoiceToggle = () => {
@@ -126,7 +82,7 @@ export function ChatPage() {
 
     setInput("Listening…");
     setIsListening(true);
-    startRecording();
+    void startRecording();
   };
 
   const startRecording = async () => {
@@ -226,7 +182,7 @@ export function ChatPage() {
                   <button
                     key={user}
                     type="button"
-                    onClick={() => handleSendMessage(`summary for ${user}`)}
+                    onClick={() => handleSubmit(user, user)}
                     className="rounded-full border border-sky-500/40 bg-sky-500/10 px-3 py-1.5 text-sm text-sky-200 transition hover:border-sky-400 hover:bg-sky-500/20"
                   >
                     {user}
@@ -258,6 +214,11 @@ export function ChatPage() {
             <div className="flex-1 overflow-y-auto px-4 py-5 sm:px-6">
               <div className="mx-auto max-w-4xl">
                 <ChatMessageList messages={messages} isSending={isSending} />
+                {error ? (
+                  <p className="mt-4 rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">
+                    {error.message}
+                  </p>
+                ) : null}
                 <div ref={bottomRef} />
               </div>
             </div>
@@ -265,7 +226,8 @@ export function ChatPage() {
             <ChatComposer
               value={input}
               onChange={setInput}
-              onSend={handleSendMessage}
+              onSend={() => handleSubmit()}
+              onSubmit={handleComposerSubmit}
               onVoiceToggle={handleVoiceToggle}
               isSending={isSending}
               isListening={isListening}

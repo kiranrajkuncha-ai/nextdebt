@@ -1,10 +1,11 @@
-import { ChatMessage, ChatMessageData } from "./ChatMessage";
+import type { UIMessage } from "ai";
+import { ChatMessage } from "./ChatMessage";
 
 export function ChatMessageList({
   messages,
   isSending,
 }: {
-  messages: ChatMessageData[];
+  messages: UIMessage[];
   isSending: boolean;
 }) {
   return (

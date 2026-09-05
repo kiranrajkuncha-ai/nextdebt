@@ -22,14 +22,41 @@ const getConnectionString = () => {
   return `postgresql://${dbUser}:${encodedPassword}@${dbHost}:${dbPort}/${dbName}`;
 };
 
+const shouldUseSsl = () => {
+  if (process.env.DB_SSL === "true") {
+    return true;
+  }
+
+  if (process.env.DB_SSL === "false") {
+    return false;
+  }
+
+  const connectionString = process.env.DATABASE_URL ?? "";
+
+  if (/sslmode=disable/i.test(connectionString)) {
+    return false;
+  }
+
+  if (/sslmode=require/i.test(connectionString)) {
+    return true;
+  }
+
+  const host =
+    process.env.DB_HOST ??
+    connectionString.match(/@([^:/?]+)/)?.[1] ??
+    "127.0.0.1";
+  const isLocalHost = host === "127.0.0.1" || host === "localhost";
+
+  return process.env.NODE_ENV === "production" && !isLocalHost;
+};
+
 export const pool = new Pool({
   connectionString: getConnectionString(),
-  ssl:
-    process.env.NODE_ENV === "production"
-      ? {
-          rejectUnauthorized: false,
-        }
-      : false,
+  ssl: shouldUseSsl()
+    ? {
+        rejectUnauthorized: false,
+      }
+    : false,
 });
 
 const formatEmbeddingForPgVector = (embedding?: number[] | null) => {
